@@ -5,3 +5,4 @@ solver
 mini
 .DS_Store
 bench/*_[0-9]*.s
+tools/gen_tables
