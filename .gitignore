@@ -12,3 +12,6 @@ asm/test_tables.s
 asm/ida.s
 tools/list_states
 d11.txt
+asm/build/
+asm/build/
+asm/build/

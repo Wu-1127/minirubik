@@ -1,35 +1,38 @@
-# IDA* solver for the 2x2x2 cube, RV32I only.
+# Solver core, shared by every build.
+# Concatenated after one asm/main_*.s file and before asm/tables.s
+# (see tools/build.sh).
 #
 # Search state: permutation rank p (0..5039) and orientation rank o (0..728).
 # Moves are table lookups: perm_move[p][m], orient_move[o][m], rows of 18 bytes.
 # h = max(perm_dist[p], orient_dist[o]).
-# The recursive search of ida.c is turned into a loop with an explicit
-# stack of frames, one frame per depth.
+# The recursive search of ida.c becomes a loop with an explicit stack of
+# frames, one frame per depth.
 
     .data
+    .align 2
 # Frames: one per depth 0..10, 6 words each (24 bytes):
 #   0: prow   4: orow   8: move offset (2 * m)   12: face   16: turns left   20: last face
 frames:
     .zero 264
 path:
     .zero 12                 # path[g] = move index 0..8
-input:
-    # .string "54721631111111"
-    # .string "12345671111111"
-    .string "21345671111111"
-    .byte 0                  # pad to 16 bytes so the tables stay 2-byte aligned
 # Move names, 2 bytes each (letter, suffix or 0): R R2 R' B B2 B' D D2 D'
 # ASCII: R = 82, B = 66, D = 68, '2' = 50, apostrophe = 39
 names:
     .byte 82, 0, 82, 50, 82, 39
     .byte 66, 0, 66, 50, 66, 39
     .byte 68, 0, 68, 50, 68, 39
+    .align 2                 # asm/tables.s follows: keep its halfwords aligned
 
     .text
-    .globl main
-main:
-    li   sp, 0x7ffffff0      # same as the GUI default; CLI starts with sp = 0
-    la   s0, input
+# ---------------------------------------------------------------------------
+# solve_input: find a shortest solution.
+#   in:  a0 = address of the 14-character state
+#   out: a0 = solution length, a1 = root p, a2 = root o; path[0..a0-1] = moves
+# Uses s0-s11, t0-t6, a0-a7. Calls nothing, so ra is preserved.
+# ---------------------------------------------------------------------------
+solve_input:
+    mv   s0, a0
 
 # ---- Orientation rank -> s2 ----------------------------------------------
     li   s2, 0
@@ -208,34 +211,77 @@ iteration_failed:
     mv   s3, s4              # bound = next_bound
     j    iteration
 
-# ---- Print the solution: path[0 .. g-1] ----------------------------------
 found:
-    la   s9, names
-    li   s10, 0              # i = 0
-print_loop:
-    beq  s10, s5, print_end
-    beqz s10, print_move     # no space before the first move
+    mv   a0, s5              # solution length
+    mv   a1, s1              # root ranks, for verify
+    mv   a2, s2
+    ret
+
+# ---------------------------------------------------------------------------
+# print_path: print path[0..a0-1] as move names separated by spaces, then a newline.
+#   in: a0 = solution length.   Uses t0-t5, a0, a7; preserves a1, a2.
+# ---------------------------------------------------------------------------
+print_path:
+    mv   t5, a0
+    la   t2, path
+    la   t1, names
+    li   t0, 0               # i = 0
+pp_loop:
+    beq  t0, t5, pp_end
+    beqz t0, pp_move         # no space before the first move
     li   a0, 32
     li   a7, 11
     ecall
-print_move:
-    add  t3, a2, s10
+pp_move:
+    add  t3, t2, t0
     lbu  t3, 0(t3)           # m = path[i]
     slli t3, t3, 1           # names + 2 * m
-    add  t3, s9, t3
+    add  t3, t1, t3
     lbu  a0, 0(t3)           # face letter
-    li   a7, 11              # print character
+    li   a7, 11
     ecall
     lbu  a0, 1(t3)           # suffix, or 0 for a plain quarter turn
-    beqz a0, no_suffix
+    beqz a0, pp_next
     ecall
-no_suffix:
-    addi s10, s10, 1
-    j    print_loop
-print_end:
+pp_next:
+    addi t0, t0, 1
+    j    pp_loop
+pp_end:
     li   a0, 10              # newline
     li   a7, 11
     ecall
-    li   a7, 10
-    ecall
-    
+    ret
+
+# ---------------------------------------------------------------------------
+# verify: replay path[0..a0-1] from (a1, a2) with the transition tables.
+#   in:  a0 = length, a1 = root p, a2 = root o
+#   out: a0 = 1 if the replay ends at the solved state (0, 0), else 0
+# ---------------------------------------------------------------------------
+verify:
+    la   t0, perm_move
+    la   t1, orient_move
+    la   t2, path
+    li   t3, 0               # i = 0
+v_loop:
+    beq  t3, a0, v_end
+    add  t4, t2, t3
+    lbu  t4, 0(t4)
+    slli t4, t4, 1           # 2 * path[i]
+    slli t5, a1, 4           # p = perm_move[p][m]
+    slli t6, a1, 1
+    add  t5, t5, t6
+    add  t5, t5, t0
+    add  t5, t5, t4
+    lhu  a1, 0(t5)
+    slli t5, a2, 4           # o = orient_move[o][m]
+    slli t6, a2, 1
+    add  t5, t5, t6
+    add  t5, t5, t1
+    add  t5, t5, t4
+    lhu  a2, 0(t5)
+    addi t3, t3, 1
+    j    v_loop
+v_end:
+    or   a0, a1, a2
+    seqz a0, a0              # a0 = (p | o) == 0
+    ret
