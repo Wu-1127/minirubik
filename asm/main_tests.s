@@ -116,3 +116,37 @@ psn_loop:
     j    psn_loop
 psn_end:
     ret
+
+# ---------------------------------------------------------------------------
+# verify (test build only): replay path[0..a0-1] from (a1, a2) with the transition tables.
+#   in:  a0 = length, a1 = root p, a2 = root o
+#   out: a0 = 1 if the replay ends at the solved state (0, 0), else 0
+# ---------------------------------------------------------------------------
+verify:
+    la   t0, perm_move
+    la   t1, orient_move
+    la   t2, path
+    li   t3, 0               # i = 0
+v_loop:
+    beq  t3, a0, v_end
+    add  t4, t2, t3
+    lbu  t4, 0(t4)
+    slli t4, t4, 1           # 2 * path[i]
+    slli t5, a1, 4           # p = perm_move[p][m]
+    slli t6, a1, 1
+    add  t5, t5, t6
+    add  t5, t5, t0
+    add  t5, t5, t4
+    lhu  a1, 0(t5)
+    slli t5, a2, 4           # o = orient_move[o][m]
+    slli t6, a2, 1
+    add  t5, t5, t6
+    add  t5, t5, t1
+    add  t5, t5, t4
+    lhu  a2, 0(t5)
+    addi t3, t3, 1
+    j    v_loop
+v_end:
+    or   a0, a1, a2
+    seqz a0, a0              # a0 = (p | o) == 0
+    ret

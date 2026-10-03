@@ -10,10 +10,11 @@
 
     .data
     .align 2
-# Frames: one per depth 0..10, 6 words each (24 bytes):
-#   0: prow   4: orow   8: move offset (2 * m)   12: face   16: turns left   20: last face
+# Frames: one per depth 0..10, 5 words each (20 bytes):
+#   0: &perm_move[p][3 * face]   4: &orient_move[o][3 * face]   8: face
+#   12: last face   16: resume address (code of the next turn)
 frames:
-    .zero 264
+    .zero 220
 path:
     .zero 12                 # path[g] = move index 0..8
 # Move names, 2 bytes each (letter, suffix or 0): R R2 R' B B2 B' D D2 D'
@@ -117,9 +118,10 @@ root_h:
 # Register use during the search:
 #   s3 bound        s4 next_bound   s5 g
 #   s6 p, then g + 1            s7 o, then limit = bound - g - 1
-#   s8 last face    s9 prow         s10 orow        s11 2 * m
-#   a5 face         a6 turns left   a3 child p      a4 child o
-#   a1 frame pointer (frames + 24 * g)
+#   s8 last face    a5 face         a6 &perm_move[p][3 * face]   a7 &orient_move[o][3 * face]
+#   a3 child p      a4 child o      a1 frame pointer (frames + 20 * g)
+# The three turns of a face are unrolled. A frame records where to resume
+# in the parent: the address of the next turn's code.
 iteration:
     li   s4, 255             # next_bound = infinity
     li   s5, 0               # g = 0
@@ -132,85 +134,112 @@ node:
     or   t3, s6, s7
     beqz t3, found           # (p, o) == (0, 0): solved
 
-    slli t3, s6, 4           # prow = perm_move + 18 * p
+    slli t3, s6, 4           # a6 = perm_move + 18 * p
     slli t4, s6, 1
     add  t3, t3, t4
-    add  s9, t2, t3
-    slli t3, s7, 4           # orow = orient_move + 18 * o
+    add  a6, t2, t3
+    slli t3, s7, 4           # a7 = orient_move + 18 * o
     slli t4, s7, 1
     add  t3, t3, t4
-    add  s10, a0, t3
+    add  a7, a0, t3
 
     addi s6, s5, 1           # s6 = g + 1 (p is no longer needed)
     sub  s7, s3, s6          # s7 = limit = bound - (g + 1): keep a child if h <= limit
-
-    li   s11, 0              # m = 0 (byte offset 2 * m)
     li   a5, 0               # face = 0
+
 face_loop:
     beq  a5, t6, node_done   # all three faces tried
-    bne  a5, s8, face_ok
-    addi s11, s11, 6         # skip the face just turned: 3 moves
-    addi a5, a5, 1
-    j    face_loop
-face_ok:
-    li   a6, 3               # three turns of this face
-turn_loop:
-    add  t3, s9, s11
-    lhu  a3, 0(t3)           # child p = prow[m]
-    add  t3, s10, s11
-    lhu  a4, 0(t3)           # child o = orow[m]
-
+    beq  a5, s8, face_next   # never turn the face just turned
+turn0:
+    lhu  a3, 0(a6)          # child p = perm_move[p][3 * face + 0]
+    lhu  a4, 0(a7)          # child o = orient_move[o][3 * face + 0]
     add  t3, t0, a3
     lbu  t3, 0(t3)           # perm_dist[child p]
     add  t4, t1, a4
     lbu  t4, 0(t4)           # orient_dist[child o]
-    bgeu t3, t4, h_done
-    mv   t3, t4
-h_done:
-    bgeu s7, t3, descend     # h <= limit, i.e. f = g + 1 + h <= bound: expand
-
+    bgeu t3, t4, h0
+    mv   t3, t4              # h = max of the two
+h0:
+    bgeu s7, t3, desc0       # h <= limit: expand this child
     add  t3, t3, s6          # pruned: f = h + g + 1
-    bgeu t3, s4, next_turn   # next_bound = min(next_bound, f)
-    mv   s4, t3
-    j    next_turn
+    bgeu t3, s4, turn1
+    mv   s4, t3              # next_bound = min(next_bound, f)
+turn1:
+    lhu  a3, 2(a6)          # child p = perm_move[p][3 * face + 1]
+    lhu  a4, 2(a7)          # child o = orient_move[o][3 * face + 1]
+    add  t3, t0, a3
+    lbu  t3, 0(t3)           # perm_dist[child p]
+    add  t4, t1, a4
+    lbu  t4, 0(t4)           # orient_dist[child o]
+    bgeu t3, t4, h1
+    mv   t3, t4              # h = max of the two
+h1:
+    bgeu s7, t3, desc1       # h <= limit: expand this child
+    add  t3, t3, s6          # pruned: f = h + g + 1
+    bgeu t3, s4, turn2
+    mv   s4, t3              # next_bound = min(next_bound, f)
+turn2:
+    lhu  a3, 4(a6)          # child p = perm_move[p][3 * face + 2]
+    lhu  a4, 4(a7)          # child o = orient_move[o][3 * face + 2]
+    add  t3, t0, a3
+    lbu  t3, 0(t3)           # perm_dist[child p]
+    add  t4, t1, a4
+    lbu  t4, 0(t4)           # orient_dist[child o]
+    bgeu t3, t4, h2
+    mv   t3, t4              # h = max of the two
+h2:
+    bgeu s7, t3, desc2       # h <= limit: expand this child
+    add  t3, t3, s6          # pruned: f = h + g + 1
+    bgeu t3, s4, face_next
+    mv   s4, t3              # next_bound = min(next_bound, f)
+face_next:
+    addi a6, a6, 6           # next face: 3 moves = 6 bytes further in each row
+    addi a7, a7, 6
+    addi a5, a5, 1
+    j    face_loop
+
+desc0:
+    li   t4, 0               # turn within the face
+    la   t5, turn1           # where the parent resumes
+    j    descend
+desc1:
+    li   t4, 1
+    la   t5, turn2
+    j    descend
+desc2:
+    li   t4, 2
+    la   t5, face_next
 
 descend:
-    srli t4, s11, 1          # path[g] = m
-    add  t5, a2, s5
-    sb   t4, 0(t5)
-    sw   s9, 0(a1)           # save this node's loop state
-    sw   s10, 4(a1)
-    sw   s11, 8(a1)
-    sw   a5, 12(a1)
-    sw   a6, 16(a1)
-    sw   s8, 20(a1)
-    addi a1, a1, 24
+    slli t3, a5, 1           # path[g] = 3 * face + turn
+    add  t3, t3, a5
+    add  t4, t3, t4
+    add  t3, a2, s5
+    sb   t4, 0(t3)
+    sw   a6, 0(a1)           # save the parent's loop state
+    sw   a7, 4(a1)
+    sw   a5, 8(a1)
+    sw   s8, 12(a1)
+    sw   t5, 16(a1)
+    addi a1, a1, 20
     addi s5, s5, 1           # g += 1
     mv   s6, a3              # move to the child
     mv   s7, a4
     mv   s8, a5              # its previous face is this face
     j    node
 
-next_turn:
-    addi s11, s11, 2         # m += 1
-    addi a6, a6, -1
-    bnez a6, turn_loop
-    addi a5, a5, 1           # next face
-    j    face_loop
-
 node_done:
     beqz s5, iteration_failed
-    addi a1, a1, -24         # return to the parent
+    addi a1, a1, -20         # return to the parent
     addi s5, s5, -1
-    lw   s9, 0(a1)
-    lw   s10, 4(a1)
-    lw   s11, 8(a1)
-    lw   a5, 12(a1)
-    lw   a6, 16(a1)
-    lw   s8, 20(a1)
+    lw   a6, 0(a1)
+    lw   a7, 4(a1)
+    lw   a5, 8(a1)
+    lw   s8, 12(a1)
+    lw   t5, 16(a1)
     addi s6, s5, 1           # recompute g + 1 and limit for the parent
     sub  s7, s3, s6
-    j    next_turn
+    jr   t5                  # resume at the parent's next turn
 
 iteration_failed:
     mv   s3, s4              # bound = next_bound
@@ -257,36 +286,3 @@ pp_end:
     ecall
     ret
 
-# ---------------------------------------------------------------------------
-# verify: replay path[0..a0-1] from (a1, a2) with the transition tables.
-#   in:  a0 = length, a1 = root p, a2 = root o
-#   out: a0 = 1 if the replay ends at the solved state (0, 0), else 0
-# ---------------------------------------------------------------------------
-verify:
-    la   t0, perm_move
-    la   t1, orient_move
-    la   t2, path
-    li   t3, 0               # i = 0
-v_loop:
-    beq  t3, a0, v_end
-    add  t4, t2, t3
-    lbu  t4, 0(t4)
-    slli t4, t4, 1           # 2 * path[i]
-    slli t5, a1, 4           # p = perm_move[p][m]
-    slli t6, a1, 1
-    add  t5, t5, t6
-    add  t5, t5, t0
-    add  t5, t5, t4
-    lhu  a1, 0(t5)
-    slli t5, a2, 4           # o = orient_move[o][m]
-    slli t6, a2, 1
-    add  t5, t5, t6
-    add  t5, t5, t1
-    add  t5, t5, t4
-    lhu  a2, 0(t5)
-    addi t3, t3, 1
-    j    v_loop
-v_end:
-    or   a0, a1, a2
-    seqz a0, a0              # a0 = (p | o) == 0
-    ret
