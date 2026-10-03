@@ -1,3 +1,7 @@
+/* IDA* solver for the 2x2x2 cube using pattern databases.
+ * Usage: ./ida PPPPPPPOOOOOOO
+ * The solution goes to stdout; search statistics go to stderr.
+ */
 #include <stdint.h>
 #include <stdio.h>
 #include "tools/tables.h"
@@ -17,8 +21,81 @@ typedef struct {
 static const char *const move_names[MOVES] = {"R",  "R2", "R'", "B", "B2",
                                               "B'", "D",  "D2", "D'"};
 
-/* ---- Input handling, copied from solver.c ---- */
+/* ---- Search ---- */
 
+static uint8_t h(uint16_t p, uint16_t o)
+{
+    uint8_t a = perm_dist[p];
+    uint8_t b = orient_dist[o];
+    return a > b ? a : b;
+}
+
+static uint8_t path[MAX_DEPTH];
+static uint8_t solution_length;
+static uint8_t next_bound;
+static unsigned long nodes;     /* calls to search: nodes actually expanded */
+static unsigned long generated; /* children whose f was evaluated */
+
+/* Depth-first search below the current bound.
+ * The caller guarantees f = g + h(p, o) <= bound, so this function never
+ * has to prune itself; it prunes its children before calling into them.
+ * Returns 1 if a solution is found; path[0..solution_length-1] then holds it.
+ *
+ * path[g] cannot overflow: a child is entered only if g + 1 + h <= bound <= 11.
+ * At g = 11 that requires h = 0, which holds only for the solved state (0, 0),
+ * and the goal test returns before the loop writes path[11]. */
+static int search(uint16_t p, uint16_t o, uint8_t g, uint8_t bound,
+                  uint8_t last_face)
+{
+    ++nodes;
+
+    /* Goal test: the solved state is rank (0, 0). */
+    if (p == 0 && o == 0) {
+        solution_length = g;
+        return 1;
+    }
+
+    for (uint8_t m = 0; m < MOVES; ++m) {
+        /* Move pruning: never turn the face that was just turned. */
+        uint8_t face = (uint8_t) (m / 3U);
+        if (face == last_face)
+            continue;
+
+        uint16_t np = perm_move[p][m];
+        uint16_t no = orient_move[o][m];
+        uint8_t f = (uint8_t) (g + 1U + h(np, no));
+        ++generated;
+
+        /* Prune the child here instead of calling into it.
+         * Remember the smallest f that exceeded the bound. */
+        if (f > bound) {
+            if (f < next_bound)
+                next_bound = f;
+            continue;
+        }
+
+        path[g] = m;
+        if (search(np, no, (uint8_t) (g + 1U), bound, face))
+            return 1;
+    }
+    return 0;
+}
+
+/* Iterative deepening on f: raise the bound until a solution is found.
+ * The root needs no f check: the first bound is h(root), and later bounds
+ * are larger, so f(root) = h(root) <= bound always holds. */
+static uint8_t solve(uint16_t p, uint16_t o)
+{
+    uint8_t bound = h(p, o);
+    for (;;) {
+        next_bound = UINT8_MAX;
+        if (search(p, o, 0, bound, NO_FACE))
+            return solution_length;
+        bound = next_bound;
+    }
+}
+
+#ifndef IDA_NO_MAIN
 static int valid(const state_t *state)
 {
     uint8_t sum = 0;
@@ -59,69 +136,6 @@ static uint32_t rank_state(const state_t *state)
     return p * ORIENTATIONS + o;
 }
 
-/* ---- Search ---- */
-
-static uint8_t h(uint16_t p, uint16_t o)
-{
-    uint8_t a = perm_dist[p];
-    uint8_t b = orient_dist[o];
-    return a > b ? a : b;
-}
-
-static uint8_t path[MAX_DEPTH];
-static uint8_t solution_length;
-static uint8_t next_bound;
-static unsigned long nodes;
-
-/* Depth-first search below the current bound.
- * Returns 1 if a solution is found; path[0..g-1] then holds it. */
-static int search(uint16_t p, uint16_t o, uint8_t g, uint8_t bound,
-                  uint8_t last_face)
-{
-    ++nodes;
-    uint8_t f = (uint8_t) (g + h(p, o));
-
-    /* 1. Prune: this path cannot finish within the bound.
-     *    Remember the smallest f that exceeded it, for the next iteration. */
-    if (f > bound) {
-        if (f < next_bound)
-            next_bound = f;
-        return 0;
-    }
-
-    /* 2. Goal test: the solved state is rank (0, 0). */
-    if (p == 0 && o == 0) {
-        solution_length = g;
-        return 1;
-    }
-
-    /* 3. Try every move except those on the face just turned. */
-    for (uint8_t m = 0; m < MOVES; ++m) {
-        uint8_t face = (uint8_t) (m / 3U);
-        if (face == last_face)
-            continue;
-        path[g] = m;
-        /* 4. Recurse; stop as soon as any child finds a solution. */
-        if (search(perm_move[p][m], orient_move[o][m], (uint8_t) (g + 1U),
-                   bound, face))
-            return 1;
-    }
-    return 0;
-}
-
-/* Iterative deepening on f: raise the bound until a solution is found. */
-static uint8_t solve(uint16_t p, uint16_t o)
-{
-    uint8_t bound = h(p, o);
-    for (;;) {
-        next_bound = UINT8_MAX;
-        if (search(p, o, 0, bound, NO_FACE))
-            return solution_length;
-        bound = next_bound;
-    }
-}
-
-#ifndef IDA_NO_MAIN
 int main(int argc, char **argv)
 {
     state_t state;
@@ -138,7 +152,8 @@ int main(int argc, char **argv)
     for (uint8_t i = 0; i < length; ++i)
         printf("%s%s", i ? " " : "", move_names[path[i]]);
     putchar('\n');
-    fprintf(stderr, "length %u, nodes %lu\n", length, nodes);
+    fprintf(stderr, "length %u, nodes %lu, generated %lu\n", length, nodes,
+            generated);
     return 0;
 }
 #endif
