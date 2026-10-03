@@ -115,7 +115,8 @@ root_h:
     mv   s3, t3              # s3 = bound
 
 # Register use during the search:
-#   s3 bound        s4 next_bound   s5 g            s6 p          s7 o
+#   s3 bound        s4 next_bound   s5 g
+#   s6 p, then g + 1            s7 o, then limit = bound - g - 1
 #   s8 last face    s9 prow         s10 orow        s11 2 * m
 #   a5 face         a6 turns left   a3 child p      a4 child o
 #   a1 frame pointer (frames + 24 * g)
@@ -140,6 +141,9 @@ node:
     add  t3, t3, t4
     add  s10, a0, t3
 
+    addi s6, s5, 1           # s6 = g + 1 (p is no longer needed)
+    sub  s7, s3, s6          # s7 = limit = bound - (g + 1): keep a child if h <= limit
+
     li   s11, 0              # m = 0 (byte offset 2 * m)
     li   a5, 0               # face = 0
 face_loop:
@@ -163,11 +167,10 @@ turn_loop:
     bgeu t3, t4, h_done
     mv   t3, t4
 h_done:
-    add  t3, t3, s5
-    addi t3, t3, 1           # f = g + 1 + h(child)
-    bgeu s3, t3, descend     # f <= bound: expand the child
+    bgeu s7, t3, descend     # h <= limit, i.e. f = g + 1 + h <= bound: expand
 
-    bgeu t3, s4, next_turn   # pruned: next_bound = min(next_bound, f)
+    add  t3, t3, s6          # pruned: f = h + g + 1
+    bgeu t3, s4, next_turn   # next_bound = min(next_bound, f)
     mv   s4, t3
     j    next_turn
 
@@ -205,6 +208,8 @@ node_done:
     lw   a5, 12(a1)
     lw   a6, 16(a1)
     lw   s8, 20(a1)
+    addi s6, s5, 1           # recompute g + 1 and limit for the parent
+    sub  s7, s3, s6
     j    next_turn
 
 iteration_failed:
