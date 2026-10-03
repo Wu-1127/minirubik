@@ -8,3 +8,4 @@ bench/*_[0-9]*.s
 tools/gen_tables
 ida
 tools/check
+asm/test_tables.s
