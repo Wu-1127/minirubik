@@ -55,28 +55,36 @@ static int search(uint16_t p, uint16_t o, uint8_t g, uint8_t bound,
         return 1;
     }
 
-    for (uint8_t m = 0; m < MOVES; ++m) {
-        /* Move pruning: never turn the face that was just turned. */
-        uint8_t face = (uint8_t) (m / 3U);
-        if (face == last_face)
-            continue;
+    /* Row bases are computed once per node, so the inner loop needs no
+     * multiplication: prow[m] instead of perm_move[p][m] = base + (9p + m) * 2. */
+    const uint16_t *prow = perm_move[p];
+    const uint16_t *orow = orient_move[o];
 
-        uint16_t np = perm_move[p][m];
-        uint16_t no = orient_move[o][m];
-        uint8_t f = (uint8_t) (g + 1U + h(np, no));
-        ++generated;
-
-        /* Prune the child here instead of calling into it.
-         * Remember the smallest f that exceeded the bound. */
-        if (f > bound) {
-            if (f < next_bound)
-                next_bound = f;
+    /* Two nested loops replace m / 3: the face is the outer loop variable,
+     * and a skipped face skips its three moves at once. */
+    uint8_t m = 0;
+    for (uint8_t face = 0; face < 3; ++face) {
+        if (face == last_face) {
+            m = (uint8_t) (m + 3U);
             continue;
         }
+        for (uint8_t turn = 0; turn < 3; ++turn, ++m) {
+            uint16_t np = prow[m];
+            uint16_t no = orow[m];
+            uint8_t f = (uint8_t) (g + 1U + h(np, no));
+            ++generated;
 
-        path[g] = m;
-        if (search(np, no, (uint8_t) (g + 1U), bound, face))
-            return 1;
+            /* Prune the child here instead of calling into it. */
+            if (f > bound) {
+                if (f < next_bound)
+                    next_bound = f;
+                continue;
+            }
+
+            path[g] = m;
+            if (search(np, no, (uint8_t) (g + 1U), bound, face))
+                return 1;
+        }
     }
     return 0;
 }
