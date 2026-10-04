@@ -16,3 +16,5 @@ asm/build/
 asm/build/
 asm/build/
 gcc/build/
+render3d/render3d_data.s
+__pycache__/
